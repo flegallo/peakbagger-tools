@@ -2,9 +2,9 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"os"
+	"peakbagger-tools/pbtools/terminal"
 
 	"peakbagger-tools/pbtools/gpxutils"
 
@@ -16,18 +16,20 @@ import (
 	"peakbagger-tools/pbtools/strava"
 )
 
+// MaxGpxPoints Maximum number of points a gpx is allowed to be uploaded on PeakBaggers
+const MaxGpxPoints = 3000
+
 func main() {
-	if err := realMain(); err != nil {
-		fmt.Printf("failed to run service. %s", err)
+	if !realMain() {
 		os.Exit(1)
 	}
 }
 
-func realMain() error {
+func realMain() bool {
 
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		terminal.Error(nil, "Failed to load config")
 	}
 
 	strava := strava.NewClient(cfg.HTTPPort, cfg.StravaClientID, cfg.StravaSecretID)
@@ -36,29 +38,43 @@ func realMain() error {
 	// get auth token to query Strava
 	err = strava.RetrieveAuthToken()
 	if err != nil {
-		return err
+		terminal.Error(err, "Something went wrong while trying to fetch auth token")
+		return false
 	}
 
-	// get GPX from Strava
+	// download GPX on Strava
+	o := terminal.NewOperation("Downloading GPX from Strava")
 	g, err := strava.DownloadGPX(cfg.StravaActivityID)
 	if err != nil {
-		return err
+		o.Error(err, "Failed to download GPX from Strava")
+		return false
 	}
+	nbPoints := g.GetTrackPointsNo()
+	o.Success("GPX downloaded from Strava (%d points)", nbPoints)
 
-	// peakbagger limits gpx to 3000 points
-	g.ReduceTrackPoints(3000, 0)
+	// peakbagger limits gpx to a certain nb of points
+	if nbPoints > MaxGpxPoints {
+		o = terminal.NewOperation("Reducing GPX to %d points", MaxGpxPoints)
+		g.ReduceTrackPoints(3000, 0)
+		o.Success("GPX reduced to %d points", MaxGpxPoints)
+	}
 
 	// login to peakbagger
+	o = terminal.NewOperation("Login to peakbagger.com with username '%s'", pb.Username)
 	_, err = pb.Login()
 	if err != nil {
-		return err
+		o.Error(err, "Failed to login to peakbagger.com")
+		return false
 	}
+	o.Success("Successfully logged in as '%s'", pb.Username)
 
 	// find peaks within gpx boundaries
+	o = terminal.NewOperation("Searching for peaks on GPX track")
 	bounds := gpxutils.ExtendBounds(g.Bounds(), 0.01)
 	peaks, err := pb.FindPeaks(&bounds)
 	if err != nil {
-		return err
+		o.Error(err, "Failed to find peaks around GPX boundaries")
+		return false
 	}
 
 	// check which peaks are on the track
@@ -81,28 +97,30 @@ func realMain() error {
 			peaksOnTrack = append(peaksOnTrack, peaks[i])
 		}
 	}
-
-	// no peaks, on track, quit for now
-	// TODO propose to the user to manually enter a peak
-	if len(peaksOnTrack) == 0 {
-		return errors.New("no peaks found on track to add to Peakbagger")
+	if len(peaksOnTrack) > 0 {
+		o.Success("Found %d peaks on GPX track", len(peaksOnTrack))
+	} else {
+		o.Error(nil, "No peaks found on GPX track")
+		return false
 	}
 
 	// confirm with the user which peaks he summited
 	// TODO propose the user to edit the list and add failed attempts
-	fmt.Printf("Found %d peak(s) on track:\n", len(peaksOnTrack))
-	for _, p := range peaksOnTrack {
-		fmt.Printf(" - %s\n", p.Name)
+	fmt.Println("")
+	fmt.Println("   List of peak(s) on track:")
+	for i, p := range peaksOnTrack {
+		fmt.Printf("    (%d) %s\n", i+1, p.Name)
 	}
+	fmt.Println("")
 	fmt.Print("Is that correct? (y/n)")
 	input := bufio.NewScanner(os.Stdin)
 	input.Scan()
 	if input.Text() != "y" && input.Text() != "yes" {
-		return nil
+		return false
 	}
 
 	// add new ascents to peakbagger
-	fmt.Println("Adding ascents to peakbagger!")
+	fmt.Println("")
 	gpsPoints := g.Tracks[0].Segments[0].Points
 	for _, p := range peaksOnTrack {
 		ascent := peakbagger.Ascent{
@@ -114,13 +132,14 @@ func realMain() error {
 			EndElevation:   gpsPoints[len(gpsPoints)-1].Elevation.Value(),
 		}
 
-		fmt.Printf("Adding ascent of '%s' to peakbagger\n", p.Name)
+		o = terminal.NewOperation("Adding ascent of '%s' to peakbagger", p.Name)
 		_, err := pb.AddAscent(ascent)
 		if err != nil {
-			return err
+			o.Error(err, "Failed to add ascenf of '%s' to peakbagger", p.Name)
+			return false
 		}
+		o.Success("Added ascent of '%s' to peakbagger!", p.Name)
 	}
-	fmt.Printf("Done, %d peak(s) added to peakbagger\n", len(peaksOnTrack))
 
-	return nil
+	return true
 }
