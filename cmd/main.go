@@ -19,6 +19,10 @@ import (
 // MaxGpxPoints Maximum number of points a gpx is allowed to be uploaded on PeakBaggers
 const MaxGpxPoints = 3000
 
+// DistanceToPeakThreshold is the maximum distance in meters from the peak coordinates
+// after which we consider the peak to be summited.
+const DistanceToPeakThreshold = 25
+
 func main() {
 	if !realMain() {
 		os.Exit(1)
@@ -52,13 +56,6 @@ func realMain() bool {
 	nbPoints := g.GetTrackPointsNo()
 	o.Success("GPX downloaded from Strava (%d points)", nbPoints)
 
-	// peakbagger limits gpx to a certain nb of points
-	if nbPoints > MaxGpxPoints {
-		o = terminal.NewOperation("Reducing GPX to %d points", MaxGpxPoints)
-		g.ReduceTrackPoints(3000, 0)
-		o.Success("GPX reduced to %d points", MaxGpxPoints)
-	}
-
 	// login to peakbagger
 	o = terminal.NewOperation("Login to peakbagger.com with username '%s'", pb.Username)
 	_, err = pb.Login()
@@ -91,9 +88,9 @@ func realMain() bool {
 		}
 	}
 	peaksOnTrack := []peakbagger.Peak{}
-	positions := g.GetLocationsPositionsOnTrack(1000, locations...)
-	for i, p := range positions {
-		if len(p) > 0 {
+	distances := gpxutils.FindShortestDistanceToTrack(g, locations)
+	for i, d := range distances {
+		if d < DistanceToPeakThreshold {
 			peaksOnTrack = append(peaksOnTrack, peaks[i])
 		}
 	}
@@ -119,8 +116,16 @@ func realMain() bool {
 		return false
 	}
 
-	// add new ascents to peakbagger
 	fmt.Println("")
+
+	// peakbagger limits gpx to a certain nb of points
+	if nbPoints > MaxGpxPoints {
+		o = terminal.NewOperation("Reducing GPX to %d points", MaxGpxPoints)
+		g.ReduceTrackPoints(MaxGpxPoints, 0)
+		o.Success("GPX reduced to %d points", MaxGpxPoints)
+	}
+
+	// add new ascents to peakbagger
 	gpsPoints := g.Tracks[0].Segments[0].Points
 	for _, p := range peaksOnTrack {
 		ascent := peakbagger.Ascent{
