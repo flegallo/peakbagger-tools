@@ -126,6 +126,43 @@ func FindShortestDistanceToTrack(g *gpx.GPX, pts []gpx.Location) []float64 {
 	return results
 }
 
+// GetClosestPointsFromLocations returns for each given location the shortest gpx point on track
+func GetClosestPointsFromLocations(g *gpx.GPX, pts []gpx.Location) []gpx.GPXPoint {
+	results := make([]gpx.GPXPoint, len(pts))
+	distances := make([]float64, len(pts))
+	for i := range distances {
+		distances[i] = math.MaxFloat64
+	}
+
+	for _, track := range g.Tracks {
+		for _, segment := range track.Segments {
+			for _, point := range segment.Points {
+				for i, p := range pts {
+					currentDistance := Distance(&point, p)
+					if currentDistance < distances[i] {
+						distances[i] = currentDistance
+						results[i] = point
+					}
+				}
+			}
+		}
+	}
+
+	return results
+}
+
+// NewLocation returns a new Location oject from a given long/lat
+func NewLocation(longitude, latitude float64) gpx.Location {
+	e := gpx.NewNullableFloat64(-1)
+	e.SetNull()
+
+	return &gpx.Point{
+		Longitude: longitude,
+		Latitude:  latitude,
+		Elevation: *e,
+	}
+}
+
 // haversin(θ) function
 func hsin(theta float64) float64 {
 	return math.Pow(math.Sin(theta/2), 2)

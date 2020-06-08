@@ -83,7 +83,7 @@ func (s *Strava) DownloadGPX(activityID int64) (*gpx.GPX, error) {
 				Longitude: stream.Location.Data[i][1],
 				Elevation: *gpx.NewNullableFloat64(stream.Elevation.Data[i]),
 			},
-			Timestamp: time.Unix(int64(stream.Time.Data[i]), 0),
+			Timestamp: activity.StartDateLocal.Add(time.Second * time.Duration(stream.Time.Data[i])),
 		}
 	}
 
