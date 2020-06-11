@@ -49,7 +49,7 @@ func (s *Strava) RetrieveAuthToken() error {
 }
 
 // GetActivityLink builds strava activity url from activity ID
-func GetActivityLink(activityID int64) string {
+func (s *Strava) GetActivityLink(activityID int64) string {
 	return fmt.Sprintf("https://strava.com/activities/%d", activityID)
 }
 

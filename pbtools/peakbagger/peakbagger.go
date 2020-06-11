@@ -3,6 +3,7 @@ package peakbagger
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"peakbagger-tools/pbtools/track"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 
@@ -105,7 +107,7 @@ func (pb *PeakBagger) Login() (string, error) {
 	}
 
 	href, _ := doc.Find("a:contains('My Home Page')").Next().Attr("href")
-	climberID := strings.Split(href, "cid=")[1]
+	climberID, _ := parsePeakbaggerIDFromURL(href, "cid")
 	pb.ClimberID = climberID
 
 	return climberID, nil
@@ -211,6 +213,61 @@ func (pb *PeakBagger) AddAscent(ascent Ascent) (string, error) {
 	return "", nil
 }
 
+// DeleteAscent deletes an ascent from peakbagger.com
+func (pb *PeakBagger) DeleteAscent(ascentID string) error {
+	page := fmt.Sprintf("climber/ascentedit.aspx?aid=%s", ascentID)
+	fullURL := fmt.Sprintf("%s/%s", baseURL, page)
+
+	ctx, err := pb.getAspNetContextData(page)
+	if err != nil {
+		return err
+	}
+
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	writer.SetBoundary(formDataBoundary)
+
+	// TODO complete some params and move that to a struct instead
+	writer.WriteField("__EVENTVALIDATION", ctx.EventValidation)
+	writer.WriteField("__VIEWSTATEGENERATOR", ctx.ViewStateGenerator)
+	writer.WriteField("__VIEWSTATE", ctx.ViewState)
+	writer.WriteField("DeleteButton", "Delete Ascent") // yes that's what differentiate a delete from an add...
+
+	err = writer.Close()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", fullURL, body)
+	req.Header.Add("Content-Type", "multipart/form-data; boundary="+formDataBoundary)
+
+	res, err := pb.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return fmt.Errorf("peakbagger delete ascent failed with error: %d %s", res.StatusCode, res.Status)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return err
+	}
+
+	message := doc.Find("span#SubTitle").Text()
+	if message == "" {
+		return fmt.Errorf("peakbagger delete ascent failed with unknown error")
+	}
+	if !strings.Contains(message, "Ascent Deleted") {
+		return fmt.Errorf("peakbagger delete ascent failed with error: '%s'", message)
+	}
+
+	return nil
+
+}
+
 // FindPeaks find a list of peaks near the given location
 func (pb *PeakBagger) FindPeaks(bounds *track.Bounds) ([]Peak, error) {
 	url := fmt.Sprintf("%s/Async/PLLBB.aspx?miny=%f&maxy=%f&minx=%f&maxx=%f",
@@ -245,6 +302,80 @@ func (pb *PeakBagger) FindPeaks(bounds *track.Bounds) ([]Peak, error) {
 	}
 
 	return results, nil
+}
+
+// ListAscents list ascents for the logged user
+func (pb *PeakBagger) ListAscents() (ClimberAscents, error) {
+	res, err := pb.HTTPClient.Get(fmt.Sprintf("%s/climber/ClimbListC.aspx?cid=%s&sort=AscentDate&y=9999", baseURL, pb.ClimberID))
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to load climber ascents page: %d %s", res.StatusCode, res.Status)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	ascents := []AscentSummary{}
+	var parseErr error
+	doc.Find("table.gray > tbody > tr").Each(func(index int, sel *goquery.Selection) {
+		tds := sel.Find("td")
+		if tds.Length() == 10 {
+			urlName := tds.Children().First()
+			linkDate := tds.Next().Children().First()
+
+			peakURL, pExists := urlName.Attr("href")
+			name := urlName.Text()
+			ascentURL, aExists := linkDate.Attr("href")
+			dateText := linkDate.Text()
+
+			if !pExists || !aExists {
+				parseErr = errors.New("something failed while trying to parse ascent")
+				return
+			}
+
+			date, err := time.Parse("2006-01-02", dateText)
+			peakID, pExists := parsePeakbaggerIDFromURL(peakURL, "pid")
+			ascentID, aExists := parsePeakbaggerIDFromURL(ascentURL, "aid")
+
+			if !pExists || !aExists || err != nil {
+				parseErr = errors.New("something failed while trying to parse ascent")
+				return
+			}
+
+			ascents = append(ascents, AscentSummary{
+				AscentID: ascentID,
+				PeakID:   peakID,
+				PeakName: name,
+				Date:     &date,
+			})
+		}
+	})
+
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	return ascents, nil
+}
+
+func parsePeakbaggerIDFromURL(url string, id string) (string, bool) {
+	split := strings.Split(url, id+"=")
+	if len(split) != 2 {
+		return "", false
+	}
+
+	res := split[1]
+	if strings.Contains(res, "&") {
+		res = string(res[0:strings.Index(res, "&")])
+	}
+
+	return res, true
 }
 
 func (pb *PeakBagger) uploadGPX(peakID string, g *gpx.GPX) (*aspNetContext, error) {

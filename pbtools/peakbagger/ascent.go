@@ -26,3 +26,31 @@ type Ascent struct {
 	DistanceDown  float64       // Distance down (in meters)
 	TimeDown      time.Duration // Duration down
 }
+
+// AscentSummary represents a short version of a peak ascent in peakbagger.com
+type AscentSummary struct {
+	AscentID string
+	PeakID   string
+	PeakName string
+	Date     *time.Time
+}
+
+// ClimberAscents represents a list of ascents
+type ClimberAscents []AscentSummary
+
+// Has returns true if the ascent already exists for the given peak ID and date, false otherwise
+func (as *ClimberAscents) Has(peakID string, date *time.Time) bool {
+	for _, a := range *as {
+		if dateEqual(*a.Date, *date) && peakID == a.PeakID {
+			return true
+		}
+	}
+
+	return false
+}
+
+func dateEqual(date1, date2 time.Time) bool {
+	y1, m1, d1 := date1.Date()
+	y2, m2, d2 := date2.Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
+}
