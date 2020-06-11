@@ -4,16 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"peakbagger-tools/pbtools/terminal"
-
-	"peakbagger-tools/pbtools/gpxutils"
-
-	"peakbagger-tools/pbtools/peakbagger"
-
-	"github.com/tkrajina/gpxgo/gpx"
 
 	"peakbagger-tools/pbtools/config"
+	"peakbagger-tools/pbtools/peakbagger"
 	"peakbagger-tools/pbtools/strava"
+	"peakbagger-tools/pbtools/terminal"
+	"peakbagger-tools/pbtools/track"
+
+	"github.com/tkrajina/gpxgo/gpx"
 )
 
 // MaxGpxPoints Maximum number of points a gpx is allowed to be uploaded on PeakBaggers
@@ -54,6 +52,7 @@ func realMain() bool {
 		return false
 	}
 	nbPoints := g.GetTrackPointsNo()
+	t := track.New(&g.Tracks[0].Segments[0].Points)
 	o.Success("GPX downloaded from Strava (%d points)", nbPoints)
 
 	// login to peakbagger
@@ -67,7 +66,7 @@ func realMain() bool {
 
 	// find peaks within gpx boundaries
 	o = terminal.NewOperation("Searching for peaks on GPX track")
-	bounds := gpxutils.ExtendBounds(g.Bounds(), 0.01)
+	bounds := t.Bounds().Extend(0.01)
 	peaks, err := pb.FindPeaks(&bounds)
 	if err != nil {
 		o.Error(err, "Failed to find peaks around GPX boundaries")
@@ -75,13 +74,9 @@ func realMain() bool {
 	}
 
 	// check which peaks are on the track
-	locations := make([]gpx.Location, len(peaks))
-	for i, p := range peaks {
-		locations[i] = gpxutils.NewLocation(p.Longitude, p.Latitude)
-	}
 	peaksOnTrack := []peakbagger.Peak{}
-	distances := gpxutils.FindShortestDistanceToTrack(g, locations)
-	for i, d := range distances {
+	for i, p := range peaks {
+		d := t.GetShortestDistanceFromPoint(p)
 		if d < DistanceToPeakThreshold {
 			peaksOnTrack = append(peaksOnTrack, peaks[i])
 		}
@@ -117,27 +112,12 @@ func realMain() bool {
 		o.Success("GPX reduced to %d points", MaxGpxPoints)
 	}
 
-	// find closest gps point for each peak, we'll use it to determine ascent time and other stats
-	chosenPeakLocations := make([]gpx.Location, len(peaksOnTrack))
-	for i, p := range peaksOnTrack {
-		chosenPeakLocations[i] = gpxutils.NewLocation(p.Longitude, p.Latitude)
-	}
-	closestPoints := gpxutils.GetClosestPointsFromLocations(g, chosenPeakLocations)
-
 	// add new ascents to peakbagger
-	gpsPoints := g.Tracks[0].Segments[0].Points // we know there's only 1 track and 1 segment as the gpx is build programmatically
-	for i, p := range peaksOnTrack {
-		ascent := peakbagger.Ascent{
-			PeakID:         p.PeakID,
-			Date:           &closestPoints[i].Timestamp,
-			Gpx:            g,
-			TripReport:     strava.GetActivityLink(cfg.StravaActivityID),
-			StartElevation: gpsPoints[0].Elevation.Value(),
-			EndElevation:   gpsPoints[len(gpsPoints)-1].Elevation.Value(),
-		}
-
+	fullStats := len(peaksOnTrack) == 1 // add up and down stats only if the track countains only 1 ascent
+	for _, p := range peaksOnTrack {
+		ascent := buildAscent(cfg.StravaActivityID, t, g, &p, fullStats)
 		o = terminal.NewOperation("Adding ascent of '%s' to peakbagger", p.Name)
-		_, err := pb.AddAscent(ascent)
+		_, err := pb.AddAscent(*ascent)
 		if err != nil {
 			o.Error(err, "Failed to add ascent of '%s' to peakbagger", p.Name)
 			return false
@@ -146,4 +126,34 @@ func realMain() bool {
 	}
 
 	return true
+}
+
+func buildAscent(activityID int64, t *track.Track, g *gpx.GPX, p *peakbagger.Peak, fullStats bool) *peakbagger.Ascent {
+	closestPoint, index := t.GetClosestPoint(p)
+
+	ascent := peakbagger.Ascent{
+		PeakID:         p.PeakID,
+		Date:           &closestPoint.Time,
+		Gpx:            g,
+		TripReport:     strava.GetActivityLink(activityID),
+		StartElevation: t.Points[0].Elevation,
+		EndElevation:   t.Points[len(t.Points)-1].Elevation,
+	}
+
+	// Add up and down stats
+	if fullStats {
+		t1, t2 := t.Split(index)
+		s1 := t1.Stats()
+		s2 := t2.Stats()
+
+		ascent.NetGain = s1.EndElevation - s1.StartElevation
+		ascent.NetLoss = s2.EndElevation - s2.StartElevation
+		ascent.ExtraGainUp = s1.ElevationLoss
+		ascent.ExtraLossDown = s2.ElevationGain
+		ascent.DistanceUp = s1.Distance
+		ascent.DistanceDown = s2.Distance
+		ascent.TimeUp = s1.Duration
+		ascent.TimeDown = s2.Duration
+	}
+	return &ascent
 }

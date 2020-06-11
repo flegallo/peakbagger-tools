@@ -6,54 +6,85 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
+	"net/url"
 	"os/exec"
 	"runtime"
+	"time"
 
 	strava "github.com/strava/go.strava"
 )
 
 const basePath = "https://www.strava.com/api/v3"
-
-var done = make(chan bool)
-var token string
-var errr error
+const tokenFilePath = "/tmp/pb-tools-token.json"
 
 // AuthToken represents an authorization token
 type AuthToken struct {
-	Token string
+	Token     string
+	ExpiresAt time.Time
+}
+
+type state struct {
+	done      chan bool
+	tokenResp authorizationResponse
+	err       error
+}
+
+var s = state{}
+
+type authorizationResponse struct {
+	ExpiresAt    int64  `json:"expires_at"`
+	RefreshToken string `json:"refresh_token"`
+	AccessToken  string `json:"access_token"`
 }
 
 // GetAccessToken returns Strava access token to query APIs
 func GetAccessToken(httpPort int) (*AuthToken, error) {
-	tokFile := "token.json"
-	tok, err := tokenFromFile(tokFile)
+	tok, err := tokenFromFile()
 	if err != nil {
 		tok, err = getTokenFromWeb(httpPort)
 		if err != nil {
 			return nil, err
 		}
 
-		saveToken(tokFile, tok)
+		saveToken(tok)
 	}
 
-	return &AuthToken{Token: tok}, err
+	return &AuthToken{
+		Token:     tok.AccessToken,
+		ExpiresAt: time.Unix(tok.ExpiresAt, 0),
+	}, err
+}
+
+// RefreshToken refresh access token
+func RefreshToken() (*AuthToken, error) {
+	tok, err := tokenFromFile()
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := execOauthTokenRequest(url.Values{"client_id": {fmt.Sprintf("%d", strava.ClientId)}, "client_secret": {strava.ClientSecret}, "grant_type": {"refresh_token"}, "refresh_token": {tok.RefreshToken}})
+	if err != nil {
+		return nil, err
+	}
+
+	saveToken(*resp)
+
+	return &AuthToken{
+		Token:     resp.AccessToken,
+		ExpiresAt: time.Unix(resp.ExpiresAt, 0),
+	}, nil
 }
 
 // Retrieves a token online.
-func getTokenFromWeb(httpPort int) (string, error) {
-	authenticator := &strava.OAuthAuthenticator{
-		CallbackURL:            fmt.Sprintf("http://localhost:%d/exchange_token", httpPort),
-		RequestClientGenerator: nil,
-	}
-	openbrowser(authorizationURL(authenticator, "activity:read"))
+func getTokenFromWeb(httpPort int) (authorizationResponse, error) {
+	s.done = make(chan bool)
 
-	path, err := authenticator.CallbackPath()
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	http.HandleFunc(path, authenticator.HandlerFunc(oAuthSuccess, oAuthFailure))
+	callbackURL, _ := url.Parse(fmt.Sprintf("http://localhost:%d/exchange_token", httpPort))
+
+	url := fmt.Sprintf("%s/oauth/authorize?client_id=%d&response_type=code&redirect_uri=%s&scope=activity:read&approval_prompt=force", basePath, strava.ClientId, callbackURL.String())
+	openbrowser(url)
+
+	http.HandleFunc(callbackURL.Path, handlerFunc())
 
 	// start the server
 	go func() {
@@ -63,38 +94,120 @@ func getTokenFromWeb(httpPort int) (string, error) {
 		}
 	}()
 
-	<-done
+	<-s.done
 
-	return token, errr
+	return s.tokenResp, s.err
+}
+
+// Authorize performs the second part of the OAuth exchange. The client has already been redirected to the
+// Strava authorization page, has granted authorization to the application and has been redirected back to the
+// defined URL. The code param was returned as a query string param in to the redirect_url.
+func authorize(code string, client *http.Client) (*authorizationResponse, error) {
+	// make sure a code was passed
+	if code == "" {
+		return nil, strava.OAuthInvalidCodeErr
+	}
+
+	resp, err := execOauthTokenRequest(url.Values{"client_id": {fmt.Sprintf("%d", strava.ClientId)}, "client_secret": {strava.ClientSecret}, "code": {code}})
+	return resp, err
+}
+
+func execOauthTokenRequest(data url.Values) (*authorizationResponse, error) {
+	resp, err := http.DefaultClient.PostForm(basePath+"/oauth/token", data)
+
+	// this was a poor request, maybe strava servers down?
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// check status code, could be 500, or most likely the client_secret is incorrect
+	if resp.StatusCode/100 == 5 {
+		return nil, strava.OAuthServerErr
+	}
+
+	if resp.StatusCode/100 != 2 {
+		var response strava.Error
+		contents, _ := ioutil.ReadAll(resp.Body)
+		json.Unmarshal(contents, &response)
+
+		if len(response.Errors) == 0 {
+			return nil, strava.OAuthServerErr
+		}
+
+		if response.Errors[0].Resource == "Application" {
+			return nil, strava.OAuthInvalidCredentialsErr
+		}
+
+		if response.Errors[0].Resource == "RequestToken" {
+			return nil, strava.OAuthInvalidCodeErr
+		}
+
+		return nil, &response
+	}
+
+	var response authorizationResponse
+	contents, _ := ioutil.ReadAll(resp.Body)
+	err = json.Unmarshal(contents, &response)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+// handlerFunc builds a http.HandlerFunc that will complete the token exchange
+// after a user authorizes an application on strava.com.
+// This method handles the exchange and calls success or failure after it completes.
+func handlerFunc() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// user denied authorization
+		if r.FormValue("error") == "access_denied" {
+			oAuthFailure(strava.OAuthAuthorizationDeniedErr, w, r)
+			return
+		}
+
+		code := r.FormValue("code")
+		if code == "" {
+			oAuthFailure(strava.OAuthInvalidCodeErr, w, r)
+		}
+
+		resp, err := execOauthTokenRequest(url.Values{"client_id": {fmt.Sprintf("%d", strava.ClientId)}, "client_secret": {strava.ClientSecret}, "code": {code}})
+
+		if err != nil {
+			oAuthFailure(err, w, r)
+			return
+		}
+
+		oAuthSuccess(resp, w, r)
+	}
 }
 
 // Retrieves a token from a local file.
-func tokenFromFile(file string) (string, error) {
-	b, err := ioutil.ReadFile(file)
+func tokenFromFile() (authorizationResponse, error) {
+	b, err := ioutil.ReadFile(tokenFilePath)
+	var token authorizationResponse
 	if err != nil {
-		return "", err
+		return token, err
 	}
-	return string(b), nil
+	err = json.Unmarshal(b, &token)
+	return token, err
 }
 
 // Saves a token to a file path.
-func saveToken(path string, token string) {
-	fmt.Printf("Saving credential file to: %s\n", path)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+func saveToken(token authorizationResponse) {
+	data, _ := json.MarshalIndent(token, "", " ")
+	err := ioutil.WriteFile(tokenFilePath, data, 0644)
 	if err != nil {
 		log.Fatalf("Unable to cache oauth token: %v", err)
 	}
-	defer f.Close()
-	f.WriteString(token)
 }
 
-func oAuthSuccess(auth *strava.AuthorizationResponse, w http.ResponseWriter, r *http.Request) {
-	content, _ := json.MarshalIndent(auth.Athlete, "", " ")
-	fmt.Fprint(w, string(content))
-
-	token = auth.AccessToken
-	errr = nil
-	done <- true
+func oAuthSuccess(resp *authorizationResponse, w http.ResponseWriter, r *http.Request) {
+	s.tokenResp = *resp
+	s.err = nil
+	s.done <- true
 }
 
 func oAuthFailure(err error, w http.ResponseWriter, r *http.Request) {
@@ -114,9 +227,9 @@ func oAuthFailure(err error, w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, err)
 	}
 
-	token = ""
-	errr = err
-	done <- true
+	s.tokenResp = authorizationResponse{}
+	s.err = err
+	s.done <- true
 }
 
 func openbrowser(url string) {
@@ -135,10 +248,4 @@ func openbrowser(url string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-}
-
-// AuthorizationURL constructs the url a user should use to authorize this specific application.
-func authorizationURL(auth *strava.OAuthAuthenticator, scope string) string {
-	path := fmt.Sprintf("%s/oauth/authorize?client_id=%d&response_type=code&redirect_uri=%s&scope=%s&approval_prompt=force", basePath, strava.ClientId, auth.CallbackURL, scope)
-	return path
 }
