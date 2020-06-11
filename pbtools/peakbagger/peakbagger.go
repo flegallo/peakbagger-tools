@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	c "peakbagger-tools/pbtools/convert"
+	"peakbagger-tools/pbtools/track"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 
@@ -24,33 +25,6 @@ type PeakBagger struct {
 	Password   string
 	ClimberID  string
 	HTTPClient *http.Client
-}
-
-// Ascent represents a peak ascent in peakbagger.com
-type Ascent struct {
-	PeakID string
-
-	Date       *time.Time
-	Gpx        *gpx.GPX
-	TripReport string
-
-	NetGain        float64
-	StartElevation float64
-	DistanceUp     float64
-	TimeUp         int
-
-	NetLoss      float64
-	EndElevation float64
-	DistanceDown float64
-	TimeDown     int
-}
-
-// Peak represents a peak in peakbagger.com
-type Peak struct {
-	PeakID    string
-	Latitude  float64
-	Longitude float64
-	Name      string
 }
 
 type aspNetContext struct {
@@ -163,32 +137,45 @@ func (pb *PeakBagger) AddAscent(ascent Ascent) (string, error) {
 	writer.WriteField("AscentTypeRBL", "S")
 	writer.WriteField("JournalText", ascent.TripReport)
 
-	writer.WriteField("GainFt", floatNoDecimalToString(ascent.NetGain))
-	writer.WriteField("GainM", "")
-	writer.WriteField("StartFt", floatNoDecimalToString(ascent.StartElevation))
-	writer.WriteField("StartM", "")
-	writer.WriteField("RouteUp", "")
-	writer.WriteField("ExUpFt", "")
-	writer.WriteField("ExUpM", "")
-	writer.WriteField("UpMi", floatNoDecimalToString(ascent.DistanceUp))
-	writer.WriteField("UpKm", "")
-	writer.WriteField("UpDay", "")
-	writer.WriteField("UpHr", "")
-	writer.WriteField("UpMin", "")
+	writer.WriteField("StartFt", c.Ftoan(c.ToFeet(ascent.StartElevation)))
+	if ascent.NetGain >= 0 {
+		writer.WriteField("GainFt", c.Ftoan(c.ToFeet(ascent.NetGain)))
+		writer.WriteField("GainM", c.Ftoan(ascent.NetGain))
+	}
+	if ascent.ExtraGainUp >= 0 {
+		writer.WriteField("ExUpFt", c.Ftoan(c.ToFeet(ascent.ExtraGainUp)))
+		writer.WriteField("ExUpM", c.Ftoan(ascent.ExtraGainUp))
+	}
+	if ascent.DistanceUp >= 0 {
+		writer.WriteField("UpMi", c.Ftoan(c.ToMiles(ascent.DistanceUp)))
+		writer.WriteField("UpKm", c.Ftoan(ascent.DistanceUp/1000))
+	}
+	if ascent.TimeUp >= 0 {
+		d, h, m := c.ToDaysHoursMin(ascent.TimeUp)
+		writer.WriteField("UpDay", strconv.Itoa(d))
+		writer.WriteField("UpHr", strconv.Itoa(h))
+		writer.WriteField("UpMin", strconv.Itoa(m))
+	}
 
-	writer.WriteField("LossFt", floatNoDecimalToString(ascent.NetLoss))
-	writer.WriteField("LossM", "")
-	writer.WriteField("EndPt", "")
-	writer.WriteField("EndFt", floatNoDecimalToString(ascent.EndElevation))
-	writer.WriteField("EndM", "")
-	writer.WriteField("RouteDn", "")
-	writer.WriteField("ExDnFt", "")
-	writer.WriteField("ExDnM", "")
-	writer.WriteField("DnMi", floatNoDecimalToString(ascent.DistanceDown))
-	writer.WriteField("DnKm", "")
-	writer.WriteField("DnDay", "")
-	writer.WriteField("DnHr", "")
-	writer.WriteField("DnMin", "")
+	writer.WriteField("EndFt", c.Ftoan(c.ToFeet(ascent.EndElevation)))
+	if ascent.NetLoss >= 0 {
+		writer.WriteField("LossFt", c.Ftoan(c.ToFeet(ascent.NetLoss)))
+		writer.WriteField("LossM", c.Ftoan(ascent.NetLoss))
+	}
+	if ascent.ExtraLossDown >= 0 {
+		writer.WriteField("ExDnFt", c.Ftoan(c.ToFeet(ascent.ExtraLossDown)))
+		writer.WriteField("ExDnM", c.Ftoan(ascent.ExtraLossDown))
+	}
+	if ascent.DistanceDown >= 0 {
+		writer.WriteField("DnMi", c.Ftoan(c.ToMiles(ascent.DistanceDown)))
+		writer.WriteField("DnKm", c.Ftoan(ascent.DistanceDown/1000))
+	}
+	if ascent.TimeDown >= 0 {
+		d, h, m := c.ToDaysHoursMin(ascent.TimeDown)
+		writer.WriteField("DnDay", strconv.Itoa(d))
+		writer.WriteField("DnHr", strconv.Itoa(h))
+		writer.WriteField("DnMin", strconv.Itoa(m))
+	}
 
 	err = writer.Close()
 	if err != nil {
@@ -225,13 +212,13 @@ func (pb *PeakBagger) AddAscent(ascent Ascent) (string, error) {
 }
 
 // FindPeaks find a list of peaks near the given location
-func (pb *PeakBagger) FindPeaks(bounds *gpx.GpxBounds) ([]Peak, error) {
+func (pb *PeakBagger) FindPeaks(bounds *track.Bounds) ([]Peak, error) {
 	url := fmt.Sprintf("%s/Async/PLLBB.aspx?miny=%f&maxy=%f&minx=%f&maxx=%f",
 		baseURL,
-		bounds.MinLatitude,
-		bounds.MaxLatitude,
-		bounds.MinLongitude,
-		bounds.MaxLongitude,
+		bounds.MinLat,
+		bounds.MaxLat,
+		bounds.MinLng,
+		bounds.MaxLng,
 	)
 
 	resp, err := pb.HTTPClient.Get(url)
@@ -348,8 +335,4 @@ func (pb *PeakBagger) getAspNetContextData(path string) (*aspNetContext, error) 
 		ViewStateGenerator: viewStateGen,
 		ViewState:          viewState,
 	}, nil
-}
-
-func floatNoDecimalToString(n float64) string {
-	return strconv.Itoa(int(n))
 }

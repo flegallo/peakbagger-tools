@@ -49,15 +49,13 @@ func (s *Strava) RetrieveAuthToken() error {
 }
 
 // GetActivityLink builds strava activity url from activity ID
-func (s *Strava) GetActivityLink(activityID int64) string {
-	return fmt.Sprintf("http://strava.com/%d", activityID)
+func GetActivityLink(activityID int64) string {
+	return fmt.Sprintf("https://strava.com/activities/%d", activityID)
 }
 
 // DownloadGPX downloads a gpx from a given Strava activity
 func (s *Strava) DownloadGPX(activityID int64) (*gpx.GPX, error) {
-	if s.CurrentToken == nil {
-		return nil, errors.New("No auth token found, call RetrieveAuthToken() first")
-	}
+	s.ensureToken()
 
 	client := strava.NewClient(s.CurrentToken.Token)
 	aService := strava.NewActivitiesService(client)
@@ -110,4 +108,21 @@ func (s *Strava) DownloadGPX(activityID int64) (*gpx.GPX, error) {
 
 	return &g, nil
 
+}
+
+func (s *Strava) ensureToken() error {
+	if s.CurrentToken == nil {
+		return errors.New("No auth token found, call RetrieveAuthToken() first")
+	}
+
+	expires := s.CurrentToken.ExpiresAt
+	var err error
+	if expires.Add(-10 * time.Minute).Before(time.Now()) {
+		fmt.Println("Refreshing expired token")
+		t, e := RefreshToken()
+		s.CurrentToken = t
+		err = e
+	}
+
+	return err
 }
