@@ -10,8 +10,6 @@ import (
 	"peakbagger-tools/pbtools/strava"
 	"peakbagger-tools/pbtools/terminal"
 	"peakbagger-tools/pbtools/track"
-
-	"github.com/tkrajina/gpxgo/gpx"
 )
 
 // MaxGpxPoints Maximum number of points a gpx is allowed to be uploaded on PeakBaggers
@@ -64,6 +62,15 @@ func realMain() bool {
 	}
 	o.Success("Successfully logged in as '%s'", pb.Username)
 
+	// fetch climber ascents
+	o = terminal.NewOperation("Retrieving climber ascents from peakbagger.com")
+	ascents, err := pb.ListAscents()
+	if err != nil {
+		o.Error(err, "Failed to retrieve climber ascents from peakbagger.com")
+		return false
+	}
+	o.Success("Successfully fetched %d ascents", len(ascents))
+
 	// find peaks within gpx boundaries
 	o = terminal.NewOperation("Searching for peaks on GPX track")
 	bounds := t.Bounds().Extend(0.01)
@@ -115,45 +122,46 @@ func realMain() bool {
 	// add new ascents to peakbagger
 	fullStats := len(peaksOnTrack) == 1 // add up and down stats only if the track countains only 1 ascent
 	for _, p := range peaksOnTrack {
-		ascent := buildAscent(cfg.StravaActivityID, t, g, &p, fullStats)
 		o = terminal.NewOperation("Adding ascent of '%s' to peakbagger", p.Name)
-		_, err := pb.AddAscent(*ascent)
+		closestPoint, index := t.GetClosestPoint(p)
+
+		if ascents.Has(p.PeakID, &closestPoint.Time) {
+			o.Error(err, "Ascent of '%s' on %s already exists on peakbagger", p.Name, closestPoint.Time.Format("Jan 2, 2006"))
+			break
+		}
+
+		ascent := peakbagger.Ascent{
+			PeakID:         p.PeakID,
+			Date:           &closestPoint.Time,
+			Gpx:            g,
+			TripReport:     strava.GetActivityLink(cfg.StravaActivityID),
+			StartElevation: t.Points[0].Elevation,
+			EndElevation:   t.Points[len(t.Points)-1].Elevation,
+		}
+
+		// Add up and down stats
+		if fullStats {
+			t1, t2 := t.Split(index)
+			s1 := t1.Stats()
+			s2 := t2.Stats()
+
+			ascent.NetGain = s1.EndElevation - s1.StartElevation
+			ascent.NetLoss = s2.EndElevation - s2.StartElevation
+			ascent.ExtraGainUp = s1.ElevationLoss
+			ascent.ExtraLossDown = s2.ElevationGain
+			ascent.DistanceUp = s1.Distance
+			ascent.DistanceDown = s2.Distance
+			ascent.TimeUp = s1.Duration
+			ascent.TimeDown = s2.Duration
+		}
+
+		_, err := pb.AddAscent(ascent)
 		if err != nil {
 			o.Error(err, "Failed to add ascent of '%s' to peakbagger", p.Name)
-			return false
+			break
 		}
 		o.Success("Added ascent of '%s' to peakbagger!", p.Name)
 	}
 
 	return true
-}
-
-func buildAscent(activityID int64, t *track.Track, g *gpx.GPX, p *peakbagger.Peak, fullStats bool) *peakbagger.Ascent {
-	closestPoint, index := t.GetClosestPoint(p)
-
-	ascent := peakbagger.Ascent{
-		PeakID:         p.PeakID,
-		Date:           &closestPoint.Time,
-		Gpx:            g,
-		TripReport:     strava.GetActivityLink(activityID),
-		StartElevation: t.Points[0].Elevation,
-		EndElevation:   t.Points[len(t.Points)-1].Elevation,
-	}
-
-	// Add up and down stats
-	if fullStats {
-		t1, t2 := t.Split(index)
-		s1 := t1.Stats()
-		s2 := t2.Stats()
-
-		ascent.NetGain = s1.EndElevation - s1.StartElevation
-		ascent.NetLoss = s2.EndElevation - s2.StartElevation
-		ascent.ExtraGainUp = s1.ElevationLoss
-		ascent.ExtraLossDown = s2.ElevationGain
-		ascent.DistanceUp = s1.Distance
-		ascent.DistanceDown = s2.Distance
-		ascent.TimeUp = s1.Duration
-		ascent.TimeDown = s2.Duration
-	}
-	return &ascent
 }
