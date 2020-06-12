@@ -3,6 +3,8 @@ package strava
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	strava "github.com/strava/go.strava"
@@ -108,6 +110,21 @@ func (s *Strava) DownloadGPX(activityID int64) (*gpx.GPX, error) {
 
 	return &g, nil
 
+}
+
+// ParseActivityID parse Strava activity id from url
+func ParseActivityID(activityLink string) (int64, error) {
+	parts := strings.Split(activityLink, "/")
+	if len(parts) > 0 {
+		activityID, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+		if err != nil {
+			return -1, errors.New("wrong activity link format")
+		}
+
+		return activityID, nil
+	}
+
+	return -1, errors.New("wrong activity link format")
 }
 
 func (s *Strava) ensureToken() error {

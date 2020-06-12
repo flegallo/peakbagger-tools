@@ -30,6 +30,7 @@ type PeakBagger struct {
 }
 
 type aspNetContext struct {
+	PageTitle          string
 	EventValidation    string
 	ViewStateGenerator string
 	ViewState          string
@@ -223,6 +224,10 @@ func (pb *PeakBagger) DeleteAscent(ascentID string) error {
 		return err
 	}
 
+	if strings.Contains(ctx.PageTitle, "Invalid User") {
+		return fmt.Errorf("invalid id")
+	}
+
 	body := new(bytes.Buffer)
 	writer := multipart.NewWriter(body)
 	writer.SetBoundary(formDataBoundary)
@@ -306,7 +311,7 @@ func (pb *PeakBagger) FindPeaks(bounds *track.Bounds) ([]Peak, error) {
 
 // ListAscents list ascents for the logged user
 func (pb *PeakBagger) ListAscents() (ClimberAscents, error) {
-	res, err := pb.HTTPClient.Get(fmt.Sprintf("%s/climber/ClimbListC.aspx?cid=%s&sort=AscentDate&y=9999", baseURL, pb.ClimberID))
+	res, err := pb.HTTPClient.Get(fmt.Sprintf("%s/climber/ClimbListC.aspx?cid=%s&u=m&sort=AscentDate&y=9999", baseURL, pb.ClimberID))
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +339,12 @@ func (pb *PeakBagger) ListAscents() (ClimberAscents, error) {
 			ascentURL, aExists := linkDate.Attr("href")
 			dateText := linkDate.Text()
 
-			if !pExists || !aExists {
+			elevationS := tds.Eq(3).Text()
+			location := tds.Eq(4).Text()
+
+			elevation, err := strconv.ParseFloat(elevationS, 64)
+
+			if !pExists || !aExists || err != nil {
 				parseErr = errors.New("something failed while trying to parse ascent")
 				return
 			}
@@ -349,10 +359,12 @@ func (pb *PeakBagger) ListAscents() (ClimberAscents, error) {
 			}
 
 			ascents = append(ascents, AscentSummary{
-				AscentID: ascentID,
-				PeakID:   peakID,
-				PeakName: name,
-				Date:     &date,
+				AscentID:  ascentID,
+				PeakID:    peakID,
+				PeakName:  name,
+				Date:      &date,
+				Elevation: elevation,
+				Location:  location,
 			})
 		}
 	})
@@ -457,11 +469,13 @@ func (pb *PeakBagger) getAspNetContextData(path string) (*aspNetContext, error) 
 		return nil, err
 	}
 
+	pageTitle := doc.Find("span#PageTitle > h1").Text()
 	eventValidation, _ := doc.Find("input[name='__EVENTVALIDATION']").Attr("value")
 	viewStateGen, _ := doc.Find("input[name='__VIEWSTATEGENERATOR']").Attr("value")
 	viewState, _ := doc.Find("input[name='__VIEWSTATE']").Attr("value")
 
 	return &aspNetContext{
+		PageTitle:          pageTitle,
 		EventValidation:    eventValidation,
 		ViewStateGenerator: viewStateGen,
 		ViewState:          viewState,

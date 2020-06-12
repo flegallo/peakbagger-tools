@@ -3,19 +3,16 @@ package config
 import (
 	"errors"
 	"flag"
-	"strconv"
-	"strings"
 
 	"github.com/github/go-config"
 )
 
 // Config holds application configuration, including statting and tracing configs.
 type Config struct {
-	HTTPPort         int
-	StravaActivityID int64
+	HTTPPort int
 
 	StravaClientID int    `config:"<YOUR_CLIENT_ID>,env=STRAVA_CLIENT_ID"`
-	StravaSecretID string `config:"<YOUR_SECRET_ID>,env=STRAVA_SECRET_ID"`
+	StravaSecretID string `config:"<YOUR_CLIENT_SECRET>,env=STRAVA_SECRET_ID"`
 
 	PeakBaggerUsername string
 	PeakBaggerPassword string
@@ -25,22 +22,11 @@ type Config struct {
 // allocated Config struct.
 func Load() (*Config, error) {
 	port := flag.Int("port", 8080, "port number to run http server on")
-	peakBaggerUsername := flag.String("pbUser", "", "Peakbagger username")
-	peakBaggerPassword := flag.String("pbPwd", "", "Peakbagger password")
-	activity := flag.String("activity", "", "Strava activity link")
 
 	flag.Parse()
 
-	activityID, err := parseActivityID(*activity)
-	if err != nil {
-		return nil, err
-	}
-
 	cfg := &Config{
-		HTTPPort:           *port,
-		StravaActivityID:   activityID,
-		PeakBaggerUsername: *peakBaggerUsername,
-		PeakBaggerPassword: *peakBaggerPassword,
+		HTTPPort: *port,
 	}
 
 	if err := config.Load(cfg); err != nil {
@@ -52,18 +38,4 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func parseActivityID(activityLink string) (int64, error) {
-	parts := strings.Split(activityLink, "/")
-	if len(parts) > 0 {
-		activityID, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
-		if err != nil {
-			return -1, errors.New("wrong activity link format")
-		}
-
-		return activityID, nil
-	}
-
-	return -1, errors.New("wrong activity link format")
 }

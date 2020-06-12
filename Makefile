@@ -11,7 +11,7 @@ clean:
 
 .PHONY: cmd
 cmd:
-	go build -o bin/peakbagger-tools ./cmd/main.go
+	go build -o bin/peakbagger ./cmd
 
 .PHONY: build-proj
 build-proj:

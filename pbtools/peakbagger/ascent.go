@@ -29,10 +29,12 @@ type Ascent struct {
 
 // AscentSummary represents a short version of a peak ascent in peakbagger.com
 type AscentSummary struct {
-	AscentID string
-	PeakID   string
-	PeakName string
-	Date     *time.Time
+	AscentID  string
+	PeakID    string
+	PeakName  string
+	Date      *time.Time
+	Elevation float64
+	Location  string
 }
 
 // ClimberAscents represents a list of ascents

@@ -2,15 +2,22 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"flag"
 	"fmt"
 	"os"
-
 	"peakbagger-tools/pbtools/config"
 	"peakbagger-tools/pbtools/peakbagger"
 	"peakbagger-tools/pbtools/strava"
 	"peakbagger-tools/pbtools/terminal"
 	"peakbagger-tools/pbtools/track"
+
+	"github.com/google/subcommands"
 )
+
+type addCmd struct {
+	stravaActivity string
+}
 
 // MaxGpxPoints Maximum number of points a gpx is allowed to be uploaded on PeakBaggers
 const MaxGpxPoints = 3000
@@ -19,17 +26,25 @@ const MaxGpxPoints = 3000
 // after which we consider the peak to be summited.
 const DistanceToPeakThreshold = 25
 
-func main() {
-	if !realMain() {
-		os.Exit(1)
-	}
+func (*addCmd) Name() string     { return "add" }
+func (*addCmd) Synopsis() string { return "Add ascents to peakbagger.com from a Strava activity." }
+func (*addCmd) Usage() string {
+	return `add [-activity] <url>
+	Register climbed peaks from Strava activity to peakbagger.
+  `
 }
 
-func realMain() bool {
+func (c *addCmd) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&c.stravaActivity, "activity", "", "Strava activity link")
+}
 
-	cfg, err := config.Load()
+func (c *addCmd) Execute(_ context.Context, f *flag.FlagSet, args ...interface{}) subcommands.ExitStatus {
+	cfg := args[0].(*config.Config)
+
+	activityID, err := strava.ParseActivityID(c.stravaActivity)
 	if err != nil {
-		terminal.Error(nil, "Failed to load config")
+		terminal.Error(err, "Couldn't parse Strava activity id")
+		return 1
 	}
 
 	strava := strava.NewClient(cfg.HTTPPort, cfg.StravaClientID, cfg.StravaSecretID)
@@ -39,15 +54,15 @@ func realMain() bool {
 	err = strava.RetrieveAuthToken()
 	if err != nil {
 		terminal.Error(err, "Something went wrong while trying to fetch auth token")
-		return false
+		return 1
 	}
 
 	// download GPX on Strava
 	o := terminal.NewOperation("Downloading GPX from Strava")
-	g, err := strava.DownloadGPX(cfg.StravaActivityID)
+	g, err := strava.DownloadGPX(activityID)
 	if err != nil {
 		o.Error(err, "Failed to download GPX from Strava")
-		return false
+		return 1
 	}
 	nbPoints := g.GetTrackPointsNo()
 	t := track.New(&g.Tracks[0].Segments[0].Points)
@@ -58,7 +73,7 @@ func realMain() bool {
 	_, err = pb.Login()
 	if err != nil {
 		o.Error(err, "Failed to login to peakbagger.com")
-		return false
+		return 1
 	}
 	o.Success("Successfully logged in as '%s'", pb.Username)
 
@@ -67,7 +82,7 @@ func realMain() bool {
 	ascents, err := pb.ListAscents()
 	if err != nil {
 		o.Error(err, "Failed to retrieve climber ascents from peakbagger.com")
-		return false
+		return 1
 	}
 	o.Success("Successfully fetched %d ascents", len(ascents))
 
@@ -77,7 +92,7 @@ func realMain() bool {
 	peaks, err := pb.FindPeaks(&bounds)
 	if err != nil {
 		o.Error(err, "Failed to find peaks around GPX boundaries")
-		return false
+		return 1
 	}
 
 	// check which peaks are on the track
@@ -92,7 +107,7 @@ func realMain() bool {
 		o.Success("Found %d peaks on GPX track", len(peaksOnTrack))
 	} else {
 		o.Error(nil, "No peaks found on GPX track")
-		return false
+		return 1
 	}
 
 	// confirm with the user which peaks he summited
@@ -107,7 +122,7 @@ func realMain() bool {
 	input := bufio.NewScanner(os.Stdin)
 	input.Scan()
 	if input.Text() != "y" && input.Text() != "yes" {
-		return false
+		return 1
 	}
 
 	fmt.Println("")
@@ -134,7 +149,7 @@ func realMain() bool {
 			PeakID:         p.PeakID,
 			Date:           &closestPoint.Time,
 			Gpx:            g,
-			TripReport:     strava.GetActivityLink(cfg.StravaActivityID),
+			TripReport:     strava.GetActivityLink(activityID),
 			StartElevation: t.Points[0].Elevation,
 			EndElevation:   t.Points[len(t.Points)-1].Elevation,
 		}
@@ -163,5 +178,5 @@ func realMain() bool {
 		o.Success("Added ascent of '%s' to peakbagger!", p.Name)
 	}
 
-	return true
+	return 0
 }
